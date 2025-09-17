@@ -19,3 +19,8 @@ dependencies = [
     "torch>=2.8.0",
     "xgboost>=2.1.4",
 ]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.13.0",
+]
