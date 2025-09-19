@@ -1,5 +1,4 @@
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import List, Literal
 
 import numpy as np
@@ -16,23 +15,17 @@ from xgboost import XGBRegressor
 class ModelConfig:
     """Configuration of XGBoost Regression pipeline"""
 
-    csv_path: Path
+    csv_path: str
     index_col: str
-    feature_reduction: bool
     target_feature_y: str
-    test_size: float
-    seed: int
     columns_to_drop: List = field(default_factory=list)
+    seed: int = 42
+    test_size: float = 0.2
     trials_param_eval: int = 100
     trials_n_estimators: int = 10000
     trials_loss_metric: Literal["rmse", "mae"] = "mae"
     recursive_trials: bool = True
     min_features_per_sample: int = 3
-
-    def __read_in_csv__(self):
-        self.data = pd.read_csv(self.csv_path, index_col=self.index_col)
-        if self.index_col not in pd.read_csv(self.csv_path).columns:
-            raise IndexError(f"Ensure index_col: {self.index_col} present in csv given")
 
 
 class DataCleaner:
@@ -45,42 +38,47 @@ class DataCleaner:
     def __init__(self, config: ModelConfig):
         self.config = config
 
+    def read_in_csv(self):
+        self.data = pd.read_csv(self.config.csv_path, index_col=self.config.index_col)
+        if self.config.index_col not in pd.read_csv(self.config.csv_path).columns:
+            raise IndexError(
+                f"Ensure index_col: {self.config.index_col} present in csv given"
+            )
+
     def type_check_and_replace(self):
         """Convert float columns to int64 if all values are whole numbers.
 
         Returns:
-            None: Modifies self.config.data in place.
+            None: Modifies self.data in place.
         """
 
-        for col in self.config.data.columns:
-            if self.config.data[col].dtype in ["float64", "float32"]:
-                cells_not_na = self.config.data[col].dropna()
+        for col in self.data.columns:
+            if self.data[col].dtype in ["float64", "float32"]:
+                cells_not_na = self.data[col].dropna()
                 if len(cells_not_na) > 0 and (cells_not_na % 1 == 0).all():
-                    self.config.data[col] = self.config.data[col].astype("int64")
+                    self.data[col] = self.data[col].astype("Int64")
 
     def target_feature_na_drop(self):
         """Drop rows where target feature has missing values.
 
         Returns:
-            None: Modifies self.config.data in place.
+            None: Modifies self.data in place.
         """
 
-        if self.config.data[self.config.target_feature_y].isna().sum() > 0:
-            self.config.data = self.config.data.dropna(
-                subset=[self.config.target_feature_y]
-            )
+        if self.data[self.config.target_feature_y].isna().sum() > 0:
+            self.data = self.data.dropna(subset=[self.config.target_feature_y])
 
     def label_encoding(self):
         """Convert categorical columns to numeric using label encoding.
 
         Returns:
-            None: Modifies self.config.data in place.
+            None: Modifies self.data in place.
         """
 
-        categorical_cols = self.config.data.select_dtypes(include=["object"]).columns
+        categorical_cols = self.data.select_dtypes(include=["object"]).columns
         le = LabelEncoder()
         for col in categorical_cols:
-            self.config.data[col] = le.fit_transform(self.config.data[col].astype(str))
+            self.data[col] = le.fit_transform(self.data[col].astype(str))
 
 
 class ModelOptimisation:
@@ -211,12 +209,47 @@ class ModelTrain:
         feature_importance (pd.DataFrame): Feature importance rankings from model.
     """
 
-    def __init__(self, config: ModelConfig, model: ModelOptimisation):
+    def __init__(
+        self, config: ModelConfig, clean: DataCleaner, model: ModelOptimisation
+    ):
         self.config = config
+        self.clean = clean
         self.model = model
+
+    def recursive_feature_elimination_generator(self):
+        """Recursively removes zero-importance features until minimum threshold reached.
+
+        Iteratively identifies features with zero importance scores, removes them from
+        the dataset, retrains the model, and repeats until no zero-importance features
+        remain or minimum feature threshold is reached.
+
+        Returns:
+            None: Modifies self.pruned_features_data and prints elimination progress.
+        """
+
+        if not self.config.recursive_trials:
+            return
+
         self.pruned_features_data = (
-            self.config.data.copy()
+            self.clean.data.copy()
         )  # Copy for feature elimination
+
+        while (
+            len(self.pruned_features_data.columns)
+            >= self.config.min_features_per_sample
+        ):
+            prune_col = self.feature_importance.loc[
+                np.isclose(self.feature_importance["Importance"], 0)
+            ]["Feature"].tolist()
+
+            if len(prune_col) == 0:
+                break
+
+            self.pruned_features_data = self.pruned_features_data.drop(
+                columns=prune_col
+            )
+            self.model.set_x_y(self.pruned_features_data)
+            self.run_model()
 
     def run_model(self):
         """Trains XGBoost model with tuned hyperparameters and caches feature importance.
@@ -267,37 +300,6 @@ class ModelTrain:
         show_model_stats(XGBmodel)
         self.feature_importance = cache_feature_importance(XGBmodel)
 
-    def recursive_feature_elimination_generator(self):
-        """Recursively removes zero-importance features until minimum threshold reached.
-
-        Iteratively identifies features with zero importance scores, removes them from
-        the dataset, retrains the model, and repeats until no zero-importance features
-        remain or minimum feature threshold is reached.
-
-        Returns:
-            None: Modifies self.pruned_features_data and prints elimination progress.
-        """
-
-        if not self.config.recursive_trials:
-            return
-
-        while (
-            len(self.pruned_features_data.columns)
-            >= self.config.min_features_per_sample
-        ):
-            prune_col = self.feature_importance.loc[
-                np.isclose(self.feature_importance["Importance"], 0)
-            ]["Feature"].tolist()
-
-            if len(prune_col) == 0:
-                break
-
-            self.pruned_features_data = self.pruned_features_data.drop(
-                columns=prune_col
-            )
-            self.model.set_x_y(self.pruned_features_data)
-            self.run_model()
-
 
 class ModelPipeline:
     """Orchestrates complete XGBoost pipeline from data cleaning to model training.
@@ -316,21 +318,21 @@ class ModelPipeline:
         self.config = config
         self.clean = DataCleaner(config)
         self.model = ModelOptimisation(config)
-        self.train = ModelTrain(config, self.model)
+        self.train = ModelTrain(config, self.clean, self.model)
 
-    def run_pipeline(self):
+    def run(self):
         """Runs complete pipeline: cleaning, optimization, training, and feature elimination.
 
         Returns:
             None: Executes full pipeline and prints results.
         """
-
+        self.clean.read_in_csv()
         self.clean.type_check_and_replace()
         self.clean.target_feature_na_drop()
         self.clean.label_encoding()
 
         # Model optimization and training
-        self.model.set_x_y(self.config.data)
+        self.model.set_x_y(self.clean.data)
         self.model.run_trials()
         self.train.run_model()
         self.train.recursive_feature_elimination_generator()

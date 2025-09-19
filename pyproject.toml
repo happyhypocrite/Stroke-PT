@@ -3,7 +3,7 @@ name = "stroke-pt"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 dependencies = [
     "category-encoders>=2.6.4",
     "hyperopt>=0.2.7",
