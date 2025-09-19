@@ -59,6 +59,17 @@ class DataCleaner:
                 if len(cells_not_na) > 0 and (cells_not_na % 1 == 0).all():
                     self.data[col] = self.data[col].astype("Int64")
 
+    def drop_user_cols(self):
+        cols_to_drop = [
+            col for col in self.config.columns_to_drop if col in self.data.columns
+        ]
+        if cols_to_drop:
+            self.data = self.data.drop(columns=cols_to_drop)
+        else:
+            raise KeyError(
+                "Please ensure columns specified to be dropped are present in the dataset."
+            )
+
     def target_feature_na_drop(self):
         """Drop rows where target feature has missing values.
 
@@ -334,6 +345,7 @@ class ModelTrain:
             self.storage.store_final_model_stats(
                 self.feature_importance, self.model.tuned_hyperparams, mae, r2, rmse
             )
+            bar()
 
     def run_model(self):
         """Trains XGBoost model with tuned hyperparameters and caches feature importance.
@@ -409,6 +421,7 @@ class ModelPipeline:
         """
         self.clean.read_in_csv()
         self.clean.type_check_and_replace()
+        self.clean.drop_user_cols()
         self.clean.target_feature_na_drop()
         self.clean.label_encoding()
 
