@@ -9,6 +9,7 @@ from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from xgboost import XGBRegressor
+from alive_progress import alive_bar
 
 
 @dataclass
@@ -79,6 +80,71 @@ class DataCleaner:
         le = LabelEncoder()
         for col in categorical_cols:
             self.data[col] = le.fit_transform(self.data[col].astype(str))
+
+
+class DataStorage:
+    """Collects included features, models stats across feature exclusion iterations
+    Collects included feattures, chosen hyperparameters, final model stats, and feature importance
+    from chosen hyperparameter/selected feature combination.
+    """
+
+    def __init__(self, config: ModelConfig):
+        self.config = config
+        self.iteration_data = {}
+
+    def store_iteration(
+        self,
+        iteration_num: int,
+        feature_importance_df: pd.DataFrame,
+        mae: float,
+        r2: float,
+        rmse: float,
+    ):
+        """Store feature importance data for a specific iteration"""
+        iteration_df = feature_importance_df.copy()
+        iteration_df["MAE"] = mae
+        iteration_df["R2"] = r2
+        iteration_df["RMSE"] = rmse
+
+        self.iteration_data[iteration_num] = (
+            iteration_df  # Key: Iteration number, Value: pd.DataFrame of stats and features
+        )
+
+    def store_final_model_stats(
+        self,
+        feature_importance_df: pd.DataFrame,
+        tuned_hyperparams: dict,
+        mae: float,
+        r2: float,
+        rmse: float,
+    ):
+        final_model_df = feature_importance_df.copy()
+        final_model_df["MAE"] = mae
+        final_model_df["R2"] = r2
+        final_model_df["RMSE"] = rmse
+        for param, value in tuned_hyperparams.items():
+            final_model_df[param] = value
+        self.final_model_data = final_model_df
+
+    def save_final_and_iter_model_stats(self):
+        """Save iteration data and final model stats to Excel file with separate sheets.
+
+        Args:
+            filename (str): Output Excel filename
+
+        Returns:
+            None: Creates Excel file with multiple sheets
+        """
+        with pd.ExcelWriter("XGBoost_Model_Results.xlsx", engine="openpyxl") as writer:
+            # Save each iteration as a separate sheet
+            for iteration_num, df in self.iteration_data.items():
+                sheet_name = f"Iteration_{iteration_num}"
+                df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+            if hasattr(self, "final_model_data"):
+                self.final_model_data.to_excel(
+                    writer, sheet_name="Final_Model", index=False
+                )
 
 
 class ModelOptimisation:
@@ -210,11 +276,17 @@ class ModelTrain:
     """
 
     def __init__(
-        self, config: ModelConfig, clean: DataCleaner, model: ModelOptimisation
+        self,
+        config: ModelConfig,
+        clean: DataCleaner,
+        model: ModelOptimisation,
+        storage: DataStorage,
     ):
         self.config = config
         self.clean = clean
         self.model = model
+        self.storage = storage
+        self.feature_importance = pd.DataFrame()
 
     def recursive_feature_elimination_generator(self):
         """Recursively removes zero-importance features until minimum threshold reached.
@@ -234,22 +306,34 @@ class ModelTrain:
             self.clean.data.copy()
         )  # Copy for feature elimination
 
-        while (
-            len(self.pruned_features_data.columns)
-            >= self.config.min_features_per_sample
-        ):
-            prune_col = self.feature_importance.loc[
-                np.isclose(self.feature_importance["Importance"], 0)
-            ]["Feature"].tolist()
+        iter_num = 0
+        with alive_bar(unknown="stars", title="Feature elimination") as bar:
+            while (
+                len(self.pruned_features_data.columns)
+                >= self.config.min_features_per_sample
+            ):
+                iter_num += 1
+                prune_col = self.feature_importance.loc[
+                    np.isclose(self.feature_importance["Importance"], 0)
+                ]["Feature"].tolist()
 
-            if len(prune_col) == 0:
-                break
+                if len(prune_col) == 0:
+                    break
 
-            self.pruned_features_data = self.pruned_features_data.drop(
-                columns=prune_col
+                self.pruned_features_data = self.pruned_features_data.drop(
+                    columns=prune_col
+                )
+                self.model.set_x_y(self.pruned_features_data)
+                self.run_model()
+
+                mae, r2, rmse = self.iteration_stats
+                self.storage.store_iteration(
+                    iter_num, self.feature_importance, mae, r2, rmse
+                )
+
+            self.storage.store_final_model_stats(
+                self.feature_importance, self.model.tuned_hyperparams, mae, r2, rmse
             )
-            self.model.set_x_y(self.pruned_features_data)
-            self.run_model()
 
     def run_model(self):
         """Trains XGBoost model with tuned hyperparameters and caches feature importance.
@@ -265,13 +349,10 @@ class ModelTrain:
             """Prints model performance metrics on validation set"""
 
             preds = XGBmodel.predict(self.model.X_val)
-            mse = mean_squared_error(self.model.y_val, preds)
+            rmse = mean_squared_error(self.model.y_val, preds)
             r2 = r2_score(self.model.y_val, preds)
             mae = np.mean(np.abs(self.model.y_val - preds))
-
-            print(f"Mean Squared Error: {mse:.2f}")
-            print(f"R² Score: {r2:.3f}")
-            print(f"Mean Absolute Error: {mae:.2f}")
+            return mae, r2, rmse
 
         def cache_feature_importance(XGBmodel):
             """Returns DataFrame of features sorted by importance descending.
@@ -285,10 +366,9 @@ class ModelTrain:
 
             importance = XGBmodel.feature_importances_
             feature_names = self.model.X_train.columns
-            feature_importance = pd.DataFrame(
+            self.feature_importance = pd.DataFrame(
                 {"Feature": feature_names, "Importance": importance}
             ).sort_values("Importance", ascending=False)
-            return feature_importance
 
         XGBmodel = XGBRegressor(**self.model.tuned_hyperparams)
         XGBmodel.fit(
@@ -297,8 +377,8 @@ class ModelTrain:
             eval_set=[(self.model.X_val, self.model.y_val)],
             verbose=False,
         )
-        show_model_stats(XGBmodel)
-        self.feature_importance = cache_feature_importance(XGBmodel)
+        self.iteration_stats = mae, r2, rmse = show_model_stats(XGBmodel)
+        cache_feature_importance(XGBmodel)
 
 
 class ModelPipeline:
@@ -318,7 +398,8 @@ class ModelPipeline:
         self.config = config
         self.clean = DataCleaner(config)
         self.model = ModelOptimisation(config)
-        self.train = ModelTrain(config, self.clean, self.model)
+        self.storage = DataStorage(config)
+        self.train = ModelTrain(config, self.clean, self.model, self.storage)
 
     def run(self):
         """Runs complete pipeline: cleaning, optimization, training, and feature elimination.
@@ -336,3 +417,4 @@ class ModelPipeline:
         self.model.run_trials()
         self.train.run_model()
         self.train.recursive_feature_elimination_generator()
+        self.storage.save_final_and_iter_model_stats()

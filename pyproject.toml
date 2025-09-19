@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "alive-progress>=3.3.0",
     "category-encoders>=2.6.4",
     "hyperopt>=0.2.7",
     "ipykernel>=6.30.1",
