@@ -146,6 +146,7 @@ col_to_remove = [
 def main():
     config = ModelConfig(
         csv_path="C:\\Users\\rufus\\OneDrive - The University of Manchester\\PDRA\\Sequencing\\stoke_imapact_data\\Manchester_WithMeans_250612.csv",
+        save_dir="C:\\Users\\rufus\\OneDrive - The University of Manchester\\PDRA\\Sequencing\\stoke_imapact_data\\",
         index_col="Study_ID",
         target_feature_y="Normed_MoCA_V5",
         columns_to_drop=col_to_remove,

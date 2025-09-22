@@ -17,6 +17,7 @@ class ModelConfig:
     """Configuration of XGBoost Regression pipeline"""
 
     csv_path: str
+    save_dir: str
     index_col: str
     target_feature_y: str
     columns_to_drop: List = field(default_factory=list)
@@ -41,10 +42,6 @@ class DataCleaner:
 
     def read_in_csv(self):
         self.data = pd.read_csv(self.config.csv_path, index_col=self.config.index_col)
-        if self.config.index_col not in pd.read_csv(self.config.csv_path).columns:
-            raise IndexError(
-                f"Ensure index_col: {self.config.index_col} present in csv given"
-            )
 
     def type_check_and_replace(self):
         """Convert float columns to int64 if all values are whole numbers.
@@ -60,15 +57,16 @@ class DataCleaner:
                     self.data[col] = self.data[col].astype("Int64")
 
     def drop_user_cols(self):
+        if not self.config.columns_to_drop:
+            return
         cols_to_drop = [
             col for col in self.config.columns_to_drop if col in self.data.columns
         ]
-        if cols_to_drop:
-            self.data = self.data.drop(columns=cols_to_drop)
-        else:
+        if not cols_to_drop:
             raise KeyError(
                 "Please ensure columns specified to be dropped are present in the dataset."
             )
+        self.data = self.data.drop(columns=cols_to_drop)
 
     def target_feature_na_drop(self):
         """Drop rows where target feature has missing values.
@@ -121,7 +119,7 @@ class DataStorage:
             iteration_df  # Key: Iteration number, Value: pd.DataFrame of stats and features
         )
 
-    def store_final_model_stats(
+    def store_validation_model_stats(
         self,
         feature_importance_df: pd.DataFrame,
         tuned_hyperparams: dict,
@@ -129,15 +127,29 @@ class DataStorage:
         r2: float,
         rmse: float,
     ):
-        final_model_df = feature_importance_df.copy()
-        final_model_df["MAE"] = mae
-        final_model_df["R2"] = r2
-        final_model_df["RMSE"] = rmse
+        validation_model_df = feature_importance_df.copy()
+        validation_model_df["val_MAE"] = mae
+        validation_model_df["val_R2"] = r2
+        validation_model_df["val_RMSE"] = rmse
         for param, value in tuned_hyperparams.items():
-            final_model_df[param] = value
-        self.final_model_data = final_model_df
+            validation_model_df[param] = value
 
-    def save_final_and_iter_model_stats(self):
+        self.validation_model_data = validation_model_df
+
+    def store_final_model_stats(
+        self,
+        mae: float,
+        r2: float,
+        rmse: float,
+    ):
+        final_model_data_df = self.validation_model_data.copy()
+        final_model_data_df["test_MAE"] = mae
+        final_model_data_df["test_R2"] = r2
+        final_model_data_df["test_RMSE"] = rmse
+
+        self.final_model_data = final_model_data_df
+
+    def save_final_val_and_iter_model_stats(self):
         """Save iteration data and final model stats to Excel file with separate sheets.
 
         Args:
@@ -146,16 +158,26 @@ class DataStorage:
         Returns:
             None: Creates Excel file with multiple sheets
         """
-        with pd.ExcelWriter("XGBoost_Model_Results.xlsx", engine="openpyxl") as writer:
-            # Save each iteration as a separate sheet
+
+        with pd.ExcelWriter(
+            f"{self.config.save_dir}/XGBoost_Model_Results.xlsx", engine="openpyxl"
+        ) as writer:
             for iteration_num, df in self.iteration_data.items():
                 sheet_name = f"Iteration_{iteration_num}"
                 df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+            if hasattr(self, "validation_model_data"):
+                self.validation_model_data.to_excel(
+                    writer, sheet_name="Validation_Model", index=False
+                )
 
             if hasattr(self, "final_model_data"):
                 self.final_model_data.to_excel(
                     writer, sheet_name="Final_Model", index=False
                 )
+
+    def save_optomised_model(self, model: XGBRegressor):
+        model.save_model(f"{self.config.save_dir}/XGB_Final_Model.json")
 
 
 class ModelOptimisation:
@@ -309,13 +331,17 @@ class ModelTrain:
         Returns:
             None: Modifies self.pruned_features_data and prints elimination progress.
         """
+        # Initialise for both recursive_trials=False and while condition
+        mae, r2, rmse = self.iteration_stats
 
         if not self.config.recursive_trials:
+            self.storage.store_validation_model_stats(
+                self.feature_importance, self.model.tuned_hyperparams, mae, r2, rmse
+            )
             return
 
-        self.pruned_features_data = (
-            self.clean.data.copy()
-        )  # Copy for feature elimination
+        # Copy for feature elimination
+        self.pruned_features_data = self.clean.data.copy()
 
         iter_num = 0
         with alive_bar(unknown="stars", title="Feature elimination") as bar:
@@ -342,7 +368,7 @@ class ModelTrain:
                     iter_num, self.feature_importance, mae, r2, rmse
                 )
 
-            self.storage.store_final_model_stats(
+            self.storage.store_validation_model_stats(
                 self.feature_importance, self.model.tuned_hyperparams, mae, r2, rmse
             )
             bar()
@@ -392,6 +418,27 @@ class ModelTrain:
         self.iteration_stats = mae, r2, rmse = show_model_stats(XGBmodel)
         cache_feature_importance(XGBmodel)
 
+    def test_model(self):
+        """Evaluate final model on held-out test set after RFE is complete"""
+        final_hyperparams = self.model.tuned_hyperparams.copy()
+        final_hyperparams.pop("early_stopping_rounds", None)
+        final_hyperparams.pop("eval_metric", None)
+
+        XGBmodel = XGBRegressor(**final_hyperparams)
+        XGBmodel.fit(self.model.X_train, self.model.y_train)
+
+        test_preds = XGBmodel.predict(self.model.X_test)
+        test_rmse = mean_squared_error(self.model.y_test, test_preds)
+        test_r2 = r2_score(self.model.y_test, test_preds)
+        test_mae = np.mean(np.abs(self.model.y_test - test_preds))
+
+        print(
+            f"Final Test Results: MAE={test_mae:.4f}, R2={test_r2:.4f}, RMSE={test_rmse:.4f}"
+        )
+
+        self.storage.save_optomised_model(XGBmodel)
+        self.storage.store_final_model_stats(test_mae, test_r2, test_rmse)
+
 
 class ModelPipeline:
     """Orchestrates complete XGBoost pipeline from data cleaning to model training.
@@ -430,4 +477,5 @@ class ModelPipeline:
         self.model.run_trials()
         self.train.run_model()
         self.train.recursive_feature_elimination_generator()
-        self.storage.save_final_and_iter_model_stats()
+        self.train.test_model()
+        self.storage.save_final_val_and_iter_model_stats()
