@@ -1,4 +1,4 @@
-## Stroke-PT
+## Stroke-XG
 
 An automated machine learning pipeline for predicting stroke patient outcomes using XGBoost regression with Bayesian hyperparameter optimization and recursive feature elimination. Designed for clinical researchers analyzing longitudinal stroke recovery datasets.
 
@@ -53,8 +53,8 @@ This pipeline implements a comprehensive ML workflow to predict stroke patient c
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/Stroke-PT.git
-cd Stroke-PT
+git clone https://github.com/your-username/Stroke-XG.git
+cd Stroke-XG
 
 # Install dependencies (using uv)
 uv sync
