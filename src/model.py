@@ -3,13 +3,13 @@ from typing import List, Literal
 
 import numpy as np
 import pandas as pd
+from alive_progress import alive_bar
 from hyperopt import STATUS_OK, Trials, fmin, hp, tpe
 from hyperopt.pyll.base import scope
 from sklearn.metrics import mean_squared_error, r2_score
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import KFold, cross_val_score, train_test_split
 from sklearn.preprocessing import LabelEncoder
 from xgboost import XGBRegressor
-from alive_progress import alive_bar
 
 
 @dataclass
@@ -24,7 +24,7 @@ class ModelConfig:
     seed: int = 42
     test_size: float = 0.2
     trials_param_eval: int = 100
-    trials_n_estimators: int = 10000
+    trials_n_estimators: int = 1000
     trials_loss_metric: Literal["rmse", "mae"] = "mae"
     recursive_trials: bool = True
     min_features_per_sample: int = 3
@@ -204,8 +204,8 @@ class ModelOptimisation:
             "max_bin": scope.int(hp.quniform("max_bin", 200, 550, 1)),
             "n_estimators": self.config.trials_n_estimators,
             "random_state": self.config.seed,
-            "eval_metric": self.config.trials_loss_metric,
-            "early_stopping_rounds": 1000,
+            "tree_method": "hist",
+            "n_jobs": -1,
         }
 
     def set_x_y(self, data):
@@ -253,26 +253,23 @@ class ModelOptimisation:
             Returns:
                 dict: Loss value and status for hyperopt optimization.
             """
-
-            model = XGBRegressor(**space)
-
-            evaluation = [(self.X_train, self.y_train), (self.X_val, self.y_val)]
-            model.fit(self.X_train, self.y_train, eval_set=evaluation, verbose=False)
-
-            # Predictions and scores
-            preds = model.predict(self.X_val)
-            rmse = mean_squared_error(self.y_val, preds)
-            r2 = r2_score(self.y_val, preds)
-            mae = np.mean(np.abs(self.y_val - preds))
-            print("SCORE:", rmse, mae, r2)
-
             match self.config.trials_loss_metric:
                 case "mae":
-                    loss_value = mae
+                    crossval_loss_metric = "neg_mean_absolute_error"
                 case "rmse":
-                    loss_value = rmse
+                    crossval_loss_metric = "neg_root_mean_squared_error"
 
-            return {"loss": loss_value, "status": STATUS_OK, "model": model}
+            model = XGBRegressor(**space)
+            cv = KFold(n_splits=5, shuffle=True, random_state=self.config.seed)
+            scores = cross_val_score(
+                model,
+                self.X_train,
+                self.y_train,
+                cv=cv,
+                scoring=crossval_loss_metric,
+            )
+            loss_value = -np.mean(scores)  # Negative because hyperopt minimizes
+            return {"loss": loss_value, "status": STATUS_OK}
 
         trials = Trials()
         self.best_trial = fmin(
@@ -386,11 +383,26 @@ class ModelTrain:
         def show_model_stats(XGBmodel):
             """Prints model performance metrics on validation set"""
 
-            preds = XGBmodel.predict(self.model.X_val)
-            rmse = mean_squared_error(self.model.y_val, preds)
-            r2 = r2_score(self.model.y_val, preds)
-            mae = np.mean(np.abs(self.model.y_val - preds))
-            return mae, r2, rmse
+            cv = KFold(n_splits=5, shuffle=True, random_state=self.config.seed)
+            r2 = cross_val_score(
+                XGBmodel, self.model.X_train, self.model.y_train, cv=cv, scoring="r2"
+            )
+            mae = cross_val_score(
+                XGBmodel,
+                self.model.X_train,
+                self.model.y_train,
+                cv=cv,
+                scoring="neg_mean_absolute_error",
+            )
+            rmse = cross_val_score(
+                XGBmodel,
+                self.model.X_train,
+                self.model.y_train,
+                cv=cv,
+                scoring="neg_root_mean_squared_error",
+            )
+            print(f"R2: {r2}, MAE: {mae}, RMSE: {rmse} ")
+            return -np.mean(mae), np.mean(r2), -np.mean(rmse)
 
         def cache_feature_importance(XGBmodel):
             """Returns DataFrame of features sorted by importance descending.
@@ -421,8 +433,6 @@ class ModelTrain:
     def test_model(self):
         """Evaluate final model on held-out test set after RFE is complete"""
         final_hyperparams = self.model.tuned_hyperparams.copy()
-        final_hyperparams.pop("early_stopping_rounds", None)
-        final_hyperparams.pop("eval_metric", None)
 
         XGBmodel = XGBRegressor(**final_hyperparams)
         XGBmodel.fit(self.model.X_train, self.model.y_train)
