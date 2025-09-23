@@ -24,7 +24,7 @@ class ModelConfig:
     seed: int = 42
     test_size: float = 0.2
     trials_param_eval: int = 100
-    trials_n_estimators: int = 1000
+    trials_n_estimators: int = 500
     trials_loss_metric: Literal["rmse", "mae"] = "mae"
     recursive_trials: bool = True
     min_features_per_sample: int = 3
@@ -198,9 +198,9 @@ class ModelOptimisation:
             "gamma": hp.uniform("gamma", 0, 1),
             "reg_alpha": hp.uniform("reg_alpha", 0, 50),
             "reg_lambda": hp.uniform("reg_lambda", 10, 100),
-            "colsample_bytree": hp.uniform("colsample_bytree", 0, 1),
-            "min_child_weight": hp.uniform("min_child_weight", 0, 5),
-            "learning_rate": hp.uniform("learning_rate", 0, 0.3),
+            "colsample_bytree": hp.uniform("colsample_bytree", 0.001, 1),
+            "min_child_weight": hp.uniform("min_child_weight", 0.001, 5),
+            "learning_rate": hp.uniform("learning_rate", 0.001, 0.3),
             "max_bin": scope.int(hp.quniform("max_bin", 200, 550, 1)),
             "n_estimators": self.config.trials_n_estimators,
             "random_state": self.config.seed,
@@ -341,7 +341,7 @@ class ModelTrain:
         self.pruned_features_data = self.clean.data.copy()
 
         iter_num = 0
-        with alive_bar(unknown="stars", title="Feature elimination") as bar:
+        with alive_bar(iter_num, unknown="stars", title="Feature elimination") as bar:
             while (
                 len(self.pruned_features_data.columns)
                 >= self.config.min_features_per_sample
@@ -384,25 +384,41 @@ class ModelTrain:
             """Prints model performance metrics on validation set"""
 
             cv = KFold(n_splits=5, shuffle=True, random_state=self.config.seed)
-            r2 = cross_val_score(
-                XGBmodel, self.model.X_train, self.model.y_train, cv=cv, scoring="r2"
+            r2 = float(
+                np.mean(
+                    cross_val_score(
+                        XGBmodel,
+                        self.model.X_train,
+                        self.model.y_train,
+                        cv=cv,
+                        scoring="r2",
+                    )
+                )
             )
-            mae = cross_val_score(
-                XGBmodel,
-                self.model.X_train,
-                self.model.y_train,
-                cv=cv,
-                scoring="neg_mean_absolute_error",
+            mae = float(
+                -np.mean(
+                    cross_val_score(
+                        XGBmodel,
+                        self.model.X_train,
+                        self.model.y_train,
+                        cv=cv,
+                        scoring="neg_mean_absolute_error",
+                    )
+                )
             )
-            rmse = cross_val_score(
-                XGBmodel,
-                self.model.X_train,
-                self.model.y_train,
-                cv=cv,
-                scoring="neg_root_mean_squared_error",
+            rmse = float(
+                -np.mean(
+                    cross_val_score(
+                        XGBmodel,
+                        self.model.X_train,
+                        self.model.y_train,
+                        cv=cv,
+                        scoring="neg_root_mean_squared_error",
+                    )
+                )
             )
             print(f"R2: {r2}, MAE: {mae}, RMSE: {rmse} ")
-            return -np.mean(mae), np.mean(r2), -np.mean(rmse)
+            return mae, r2, rmse
 
         def cache_feature_importance(XGBmodel):
             """Returns DataFrame of features sorted by importance descending.

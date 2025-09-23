@@ -7,8 +7,6 @@ col_to_remove = [
     "Time_last_known_well_(LKW) 🔒",
     "Date/Time_Blood_Drawn_",
     "blooddrawdiff",
-    "MoCA_V2",
-    "MoCA_V3",
     "6mo_imaging",
     "30mo_imaging",
     "Qualifying_Stroke_Date",
@@ -110,7 +108,6 @@ col_to_remove = [
     "Do_you_think_that_most_people_are_better_off_than_you_are?",
     "Is_ECG_available? 🔒",
     "Are_labs_available? 🔒",
-    "Impaired_at_V5",
     "Normed_MoCA_V3",
     "Normed_MoCA_V5",
     "Normed_MoCA_V4",
@@ -121,10 +118,10 @@ col_to_remove = [
 
 def main():
     config = ModelConfig(
-        csv_path="",
-        save_dir="",
-        index_col="",
-        target_feature_y="",
+        csv_path="/Users/user/Library/CloudStorage/OneDrive-TheUniversityofManchester/PDRA/Sequencing/stoke_imapact_data/Manchester_WithMeans_250612.csv",
+        save_dir="/Users/user/Library/CloudStorage/OneDrive-TheUniversityofManchester/PDRA/Sequencing/stoke_imapact_data/",
+        index_col="Study_ID",
+        target_feature_y="MoCA_V5",
         columns_to_drop=col_to_remove,
     )
 
