@@ -24,10 +24,10 @@ class ModelConfig:
     seed: int = 42
     test_size: float = 0.2
     trials_param_eval: int = 100
-    trials_n_estimators: int = 500
     trials_loss_metric: Literal["rmse", "mae"] = "mae"
     recursive_trials: bool = True
     min_features_per_sample: int = 3
+    n_validation_folds: int = 3
 
 
 class DataCleaner:
@@ -160,7 +160,8 @@ class DataStorage:
         """
 
         with pd.ExcelWriter(
-            f"{self.config.save_dir}/XGBoost_Model_Results.xlsx", engine="openpyxl"
+            f"{self.config.save_dir}/XGBoost_Model_Results_{self.config.target_feature_y}.xlsx",
+            engine="openpyxl",
         ) as writer:
             for iteration_num, df in self.iteration_data.items():
                 sheet_name = f"Iteration_{iteration_num}"
@@ -194,15 +195,17 @@ class ModelOptimisation:
     def __init__(self, config: ModelConfig):
         self.config = config
         self.trials_hyperparam_space = {
-            "max_depth": scope.int(hp.quniform("max_depth", 1, 5, 1)),
+            "max_depth": scope.int(hp.quniform("max_depth", 2, 5, 1)),
             "gamma": hp.uniform("gamma", 0, 1),
-            "reg_alpha": hp.uniform("reg_alpha", 0, 50),
-            "reg_lambda": hp.uniform("reg_lambda", 10, 100),
+            "reg_alpha": hp.loguniform("reg_alpha", np.log(0.001), np.log(50)),
+            "reg_lambda": hp.loguniform("reg_lambda", np.log(0.1), np.log(100)),
             "colsample_bytree": hp.uniform("colsample_bytree", 0.001, 1),
-            "min_child_weight": hp.uniform("min_child_weight", 0.001, 5),
-            "learning_rate": hp.uniform("learning_rate", 0.001, 0.3),
+            "min_child_weight": hp.loguniform(
+                "min_child_weight", np.log(0.001), np.log(5)
+            ),
+            "learning_rate": hp.loguniform("learning_rate", np.log(0.001), np.log(0.3)),
             "max_bin": scope.int(hp.quniform("max_bin", 200, 550, 1)),
-            "n_estimators": self.config.trials_n_estimators,
+            "n_estimators": scope.int(hp.quniform("n_estimators", 100, 2000, 50)),
             "random_state": self.config.seed,
             "tree_method": "hist",
             "n_jobs": -1,
@@ -260,7 +263,11 @@ class ModelOptimisation:
                     crossval_loss_metric = "neg_root_mean_squared_error"
 
             model = XGBRegressor(**space)
-            cv = KFold(n_splits=5, shuffle=True, random_state=self.config.seed)
+            cv = KFold(
+                n_splits=self.config.n_validation_folds,
+                shuffle=True,
+                random_state=self.config.seed,
+            )
             scores = cross_val_score(
                 model,
                 self.X_train,
@@ -280,7 +287,9 @@ class ModelOptimisation:
             trials=trials,
         )
         self.best_trial = {
-            key: int(value) if key in ["max_depth", "max_bin"] else value
+            key: int(value)
+            if key in ["max_depth", "max_bin", "n_estimators"]
+            else value
             for key, value in self.best_trial.items()
         }
         # Merge hyperparam_space and best_trial to create tuned_hyperparams
@@ -341,7 +350,7 @@ class ModelTrain:
         self.pruned_features_data = self.clean.data.copy()
 
         iter_num = 0
-        with alive_bar(iter_num, unknown="stars", title="Feature elimination") as bar:
+        with alive_bar(unknown="stars", title="Feature elimination") as bar:
             while (
                 len(self.pruned_features_data.columns)
                 >= self.config.min_features_per_sample
@@ -365,10 +374,12 @@ class ModelTrain:
                     iter_num, self.feature_importance, mae, r2, rmse
                 )
 
+                bar()
+                bar.text(f"Iteration {iter_num}")
+
             self.storage.store_validation_model_stats(
                 self.feature_importance, self.model.tuned_hyperparams, mae, r2, rmse
             )
-            bar()
 
     def run_model(self):
         """Trains XGBoost model with tuned hyperparameters and caches feature importance.
@@ -383,7 +394,11 @@ class ModelTrain:
         def show_model_stats(XGBmodel):
             """Prints model performance metrics on validation set"""
 
-            cv = KFold(n_splits=5, shuffle=True, random_state=self.config.seed)
+            cv = KFold(
+                n_splits=self.config.n_validation_folds,
+                shuffle=True,
+                random_state=self.config.seed,
+            )
             r2 = float(
                 np.mean(
                     cross_val_score(
@@ -454,7 +469,7 @@ class ModelTrain:
         XGBmodel.fit(self.model.X_train, self.model.y_train)
 
         test_preds = XGBmodel.predict(self.model.X_test)
-        test_rmse = mean_squared_error(self.model.y_test, test_preds)
+        test_rmse = np.sqrt(mean_squared_error(self.model.y_test, test_preds))
         test_r2 = r2_score(self.model.y_test, test_preds)
         test_mae = np.mean(np.abs(self.model.y_test - test_preds))
 
