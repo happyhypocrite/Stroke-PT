@@ -1,6 +1,6 @@
 ## Stroke-XG
 
-An automated machine learning pipeline for predicting stroke patient outcomes using XGBoost regression with Bayesian hyperparameter optimization and recursive feature elimination. Designed for clinical researchers analyzing longitudinal stroke recovery datasets.
+An automated machine learning pipeline for predicting stroke patient outcomes using XGBoost regression, Bayesian hyperparameter optimization, cross-validation, and recursive feature elimination. Designed for clinical researchers analyzing longitudinal stroke recovery datasets.
 
 ### Project Overview
 
@@ -8,19 +8,22 @@ This pipeline implements a comprehensive ML workflow to predict stroke patient c
 
 ### Core Components
 1. **Automated data preprocessing** with type checking and categorical encoding
-2. **Bayesian hyperparameter optimization** using Tree-structured Parzen Estimator (TPE)  
-3. **Recursive Feature Elimination (RFE)** to identify the most predictive features
-4. **Comprehensive results tracking** with iteration-by-iteration statistics and Excel output
+2. **Configurable pipeline setup via ModelConfig dataclass**
+3. **Bayesian hyperparameter optimization** using Tree-structured Parzen Estimator (TPE)
+4. **Cross-validation** for robust model selection and metric reporting
+5. **Recursive Feature Elimination (RFE)** to identify the most predictive features, with automatic selection of the best RFE iteration based on validation metrics
+6. **Comprehensive results tracking** with iteration-by-iteration statistics and Excel output
 
 ### Features
 
 #### Data Processing
 - Label encoding for categorical features
 - User-defined column removal for irrelevant features
+- Type checking and conversion for numeric columns
 
 #### Model Training
 - XGBoostRegressor with full hyperparameter space optimization
-- Early stopping during hyperparameter tuning to prevent overfitting
+- Cross-validation for all model selection and metric reporting
 - Configurable loss metrics (MAE or RMSE)
 
 #### Feature Selection
@@ -28,6 +31,7 @@ This pipeline implements a comprehensive ML workflow to predict stroke patient c
 - Zero-importance feature removal with configurable minimum feature thresholds
 - Iterative model retraining after each elimination round
 - Feature importance tracking across all iterations
+- Automatic selection of the best RFE iteration (lowest MAE, highest R²)
 
 #### Results & Storage
 - Excel output with separate sheets for each RFE iteration
@@ -87,22 +91,23 @@ pipeline = ModelPipeline(config)
 pipeline.run()
 ```
 
+
 #### Configuration Parameters
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| csv_path | str | - | Path to input CSV file |
-| save_dir | str | - | Directory for saving outputs |
-| index_col | str | - | Column to use as DataFrame index |
-| target_feature_y | str | - | Target variable for prediction |
-| columns_to_drop | List[str] | [] | Columns to exclude from modeling |
-| seed | int | 42 | Random seed for reproducibility |
-| test_size | float | 0.2 | Proportion for test/validation splits |
-| trials_param_eval | int | 100 | Number of hyperparameter optimization trials |
-| trials_n_estimators | int | 10000 | Max trees per XGBoost model |
-| trials_loss_metric | str | "mae" | Loss metric ("mae" or "rmse") |
-| recursive_trials | bool | True | Enable recursive feature elimination |
-| min_features_per_sample | int | 3 | Minimum features to retain during RFE |
+| Parameter              | Type        | Default | Description |
+|------------------------|------------|---------|-------------|
+| csv_path               | str        | -       | Path to input CSV file |
+| save_dir               | str        | -       | Directory for saving outputs |
+| index_col              | str        | -       | Column to use as DataFrame index |
+| target_feature_y       | str        | -       | Target variable for prediction |
+| columns_to_drop        | List[str]  | []      | Columns to exclude from modeling |
+| seed                   | int        | 42      | Random seed for reproducibility |
+| test_size              | float      | 0.2     | Proportion for test/validation splits |
+| trials_param_eval      | int        | 100     | Number of hyperparameter optimization trials |
+| trials_loss_metric     | str        | "mae"  | Loss metric ("mae" or "rmse") |
+| recursive_trials       | bool       | True    | Enable recursive feature elimination |
+| min_features_per_sample| int        | 3       | Minimum features to retain during RFE |
+| n_validation_folds     | int        | 3       | Number of folds for cross-validation |
 
 #### Config Tips
 > Recursive Feature Elimination can be disabled by setting recursive_trials=False for faster training when feature selection is not needed.
@@ -142,7 +147,7 @@ Final Model Training → Test Set Evaluation → Results Storage → Model Persi
 
 The pipeline generates several output files in your specified `save_dir`:
 
-- **`XGBoost_Model_Results.xlsx`** - Comprehensive results with multiple sheets:
+- **`XGBoost_Model_Results{target_feature_y}.xlsx`** - Comprehensive results with multiple sheets:
   - `Iteration_1`, `Iteration_2`, etc. - RFE iteration statistics
   - `Validation_Model` - Final validation performance and hyperparameters
   - `Final_Model` - Combined validation and test performance
@@ -159,7 +164,6 @@ The pipeline generates several output files in your specified `save_dir`:
 
 ### Feature Selection Strategy
 - **Method**: Recursive elimination of zero-importance features
-- **Criterion**: Features with importance scores ≈ 0.0
 - **Safety**: Maintains minimum feature threshold
 - **Retraining**: Full model retraining after each elimination round
 
