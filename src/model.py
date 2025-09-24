@@ -121,20 +121,28 @@ class DataStorage:
 
     def store_validation_model_stats(
         self,
-        feature_importance_df: pd.DataFrame,
         tuned_hyperparams: dict,
         mae: float,
         r2: float,
         rmse: float,
     ):
-        validation_model_df = feature_importance_df.copy()
-        validation_model_df["val_MAE"] = mae
-        validation_model_df["val_R2"] = r2
-        validation_model_df["val_RMSE"] = rmse
-        for param, value in tuned_hyperparams.items():
-            validation_model_df[param] = value
+        """Takes best validation RFE iteration and stores it for final excel, adds hyperparam data."""
+        best_iter = None
+        best_mae = float("inf")
+        best_r2 = -float("inf")
 
-        self.validation_model_data = validation_model_df
+        for iter_num, df in self.iteration_data.items():
+            r2 = df["R2"].iloc[0]
+            mae = df["MAE"].iloc[0]
+            if mae < best_mae or (mae == best_mae and r2 > best_r2):
+                best_mae = mae
+                best_r2 = r2
+                best_iter = iter_num
+
+        best_df = self.iteration_data[best_iter].copy()
+        for param, value in tuned_hyperparams.items():
+            best_df[param] = value
+        self.best_iteration_df = best_df
 
     def store_final_model_stats(
         self,
@@ -142,7 +150,7 @@ class DataStorage:
         r2: float,
         rmse: float,
     ):
-        final_model_data_df = self.validation_model_data.copy()
+        final_model_data_df = self.best_iteration_df.copy()
         final_model_data_df["test_MAE"] = mae
         final_model_data_df["test_R2"] = r2
         final_model_data_df["test_RMSE"] = rmse
@@ -342,7 +350,7 @@ class ModelTrain:
 
         if not self.config.recursive_trials:
             self.storage.store_validation_model_stats(
-                self.feature_importance, self.model.tuned_hyperparams, mae, r2, rmse
+                self.model.tuned_hyperparams, mae, r2, rmse
             )
             return
 
@@ -378,7 +386,7 @@ class ModelTrain:
                 bar.text(f"Iteration {iter_num}")
 
             self.storage.store_validation_model_stats(
-                self.feature_importance, self.model.tuned_hyperparams, mae, r2, rmse
+                self.model.tuned_hyperparams, mae, r2, rmse
             )
 
     def run_model(self):
