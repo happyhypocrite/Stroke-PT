@@ -10,6 +10,9 @@ from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import KFold, cross_val_score, train_test_split
 from sklearn.preprocessing import LabelEncoder
 from xgboost import XGBRegressor
+import shap
+import os
+import matplotlib.pyplot as plt
 
 
 @dataclass
@@ -168,7 +171,10 @@ class DataStorage:
         """
 
         with pd.ExcelWriter(
-            f"{self.config.save_dir}/XGBoost_Model_Results_{self.config.target_feature_y}.xlsx",
+            os.path.join(
+                self.config.save_dir,
+                f"XGBoost_Model_Results_{self.config.target_feature_y}.xlsx",
+            ),
             engine="openpyxl",
         ) as writer:
             for iteration_num, df in self.iteration_data.items():
@@ -176,7 +182,7 @@ class DataStorage:
                 df.to_excel(writer, sheet_name=sheet_name, index=False)
 
             if hasattr(self, "validation_model_data"):
-                self.validation_model_data.to_excel(
+                self.best_iteration_df.to_excel(
                     writer, sheet_name="Validation_Model", index=False
                 )
 
@@ -186,7 +192,15 @@ class DataStorage:
                 )
 
     def save_optomised_model(self, model: XGBRegressor):
-        model.save_model(f"{self.config.save_dir}/XGB_Final_Model.json")
+        model.save_model(os.path.join(self.config.save_dir, "XGB_Final_Model.json"))
+
+    def calc_and_save_shap(self, model: XGBRegressor, x_test):
+        explainer = shap.TreeExplainer(model)
+        shap_vals = explainer.shap_values(x_test)
+        shap.summary_plot(shap_vals, x_test, show=False)
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.config.save_dir, "XGBoost_shap_summary_plot.png"))
+        plt.close()
 
 
 class ModelOptimisation:
@@ -473,10 +487,10 @@ class ModelTrain:
         """Evaluate final model on held-out test set after RFE is complete"""
         final_hyperparams = self.model.tuned_hyperparams.copy()
 
-        XGBmodel = XGBRegressor(**final_hyperparams)
-        XGBmodel.fit(self.model.X_train, self.model.y_train)
+        self.XGBmodel = XGBRegressor(**final_hyperparams)
+        self.XGBmodel.fit(self.model.X_train, self.model.y_train)
 
-        test_preds = XGBmodel.predict(self.model.X_test)
+        test_preds = self.XGBmodel.predict(self.model.X_test)
         test_rmse = np.sqrt(mean_squared_error(self.model.y_test, test_preds))
         test_r2 = r2_score(self.model.y_test, test_preds)
         test_mae = np.mean(np.abs(self.model.y_test - test_preds))
@@ -485,8 +499,9 @@ class ModelTrain:
             f"Final Test Results: MAE={test_mae:.4f}, R2={test_r2:.4f}, RMSE={test_rmse:.4f}"
         )
 
-        self.storage.save_optomised_model(XGBmodel)
+        self.storage.save_optomised_model(self.XGBmodel)
         self.storage.store_final_model_stats(test_mae, test_r2, test_rmse)
+        self.storage.calc_and_save_shap(self.XGBmodel, self.model.X_test)
 
 
 class ModelPipeline:
