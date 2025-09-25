@@ -377,13 +377,9 @@ class ModelTrain:
                 len(self.pruned_features_data.columns)
                 >= self.config.min_features_per_sample
             ):
-                iter_num += 1
                 prune_col = self.feature_importance.loc[
                     np.isclose(self.feature_importance["Importance"], 0)
                 ]["Feature"].tolist()
-
-                if len(prune_col) == 0:
-                    break
 
                 self.pruned_features_data = self.pruned_features_data.drop(
                     columns=prune_col
@@ -398,6 +394,10 @@ class ModelTrain:
 
                 bar()
                 bar.text(f"Iteration {iter_num}")
+                iter_num += 1
+
+                if len(prune_col) == 0:
+                    break
 
             self.storage.store_validation_model_stats(
                 self.model.tuned_hyperparams, mae, r2, rmse
